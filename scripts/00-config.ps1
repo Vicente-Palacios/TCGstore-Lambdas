@@ -12,8 +12,10 @@ $REGION = $env:AWS_REGION
 $TOPIC_NAME     = "report-events"
 $Q_REQUESTS     = "report-requests"
 $Q_GENERATION   = "report-generation"
+$Q_STOCK        = "report-stock-alerts"
 $FN_RECORDER    = "report-request-recorder"
 $FN_GENERATOR   = "report-generator"
+$FN_STOCK       = "report-stock-alert"
 
 # Quien soy: evita crear recursos en la cuenta equivocada
 $ACCOUNT_ID = aws sts get-caller-identity --query Account --output text

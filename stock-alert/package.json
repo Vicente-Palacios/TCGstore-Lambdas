@@ -1,0 +1,11 @@
+{
+  "name": "tcgstore-report-stock-alert",
+  "version": "1.0.0",
+  "description": "Lambda 3: con cada solicitud de informe, avisa las cartas con stock bajo (cola report-stock-alerts)",
+  "main": "index.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}

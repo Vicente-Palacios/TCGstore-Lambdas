@@ -6,7 +6,7 @@ $ROOT = Split-Path -Parent $PSScriptRoot
 $DIST = Join-Path $ROOT "dist"
 New-Item -ItemType Directory -Force $DIST | Out-Null
 
-foreach ($fn in "recorder", "generator") {
+foreach ($fn in "recorder", "generator", "stock-alert") {
     Push-Location (Join-Path $ROOT $fn)
     try {
         # Instalacion limpia y solo dependencias de produccion (pg), segun package-lock.json

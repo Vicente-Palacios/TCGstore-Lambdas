@@ -19,6 +19,25 @@ const MAX_TEXT = 2000; // la API de avisos acepta hasta 2000 caracteres
 // Mismo formato que usa el front (AdminPage): es-CL con USD.
 const currency = new Intl.NumberFormat("es-CL", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 
+// Fecha legible en hora de Chile (el BFF envia ISO en UTC). Si no se puede leer, se muestra tal cual.
+const TZ = process.env.REPORT_TIMEZONE || "America/Santiago";
+const dateFmt = new Intl.DateTimeFormat("es-CL", {
+  timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+});
+function formatDate(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? (iso ?? "sin fecha") : dateFmt.format(d).replace(",", "");
+}
+
+// Corta respetando emojis (un emoji ocupa 2 unidades de texto en JavaScript: .slice podria partirlo).
+function fit(text) {
+  const chars = Array.from(text);
+  return chars.length > MAX_TEXT ? chars.slice(0, MAX_TEXT - 1).join("") + "…" : text;
+}
+
+// Medallas para el podio y numeros con emoji para el resto (hasta 10).
+const RANK = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+
 function parse(record) {
   const envelope = JSON.parse(record.body);
   return JSON.parse(envelope.Message);
@@ -39,19 +58,26 @@ async function topCards() {
 
 function buildText(request, cards) {
   const header = [
-    `Informe TCG Store: las ${cards.length} cartas de mayor precio`,
-    `Solicitud ${request.requestId} de ${request.requester ?? "desconocido"} (${request.requestedAt ?? "sin fecha"})`,
+    `🃏 INFORME TCG STORE · Top ${cards.length} cartas de mayor precio`,
+    `👤 ${request.requester ?? "desconocido"} · 📅 ${formatDate(request.requestedAt)} · 🆔 ${String(request.requestId ?? "").slice(0, 8)}`,
+    "━━━━━━━━━━━━━━━━━━━━",
   ];
   if (cards.length === 0) {
-    return [...header, "No hay cartas con precio registrado en el inventario."].join("\n");
+    return fit([...header, "📭 No hay cartas con precio registrado en el inventario."].join("\n"));
   }
   const lines = cards.map((c, i) => {
-    const edition = c.set_name ? `, ${c.set_name}` : "";
-    return `${i + 1}. ${c.name} (${c.game}${edition}) - ${currency.format(Number(c.price))} - stock ${c.stock ?? 0}`;
+    const edition = c.set_name ? ` · ${c.set_name}` : "";
+    const stock = Number(c.stock ?? 0) === 0 ? "❌ agotada" : `📦 ${c.stock}`;
+    return `${RANK[i] ?? `${i + 1}.`} ${c.name} (${c.game}${edition}) — 💵 ${currency.format(Number(c.price))} · ${stock}`;
   });
   const totalValue = cards.reduce((sum, c) => sum + Number(c.price) * Number(c.stock ?? 0), 0);
-  const text = [...header, ...lines, `Valor en stock de estas cartas: ${currency.format(totalValue)}`].join("\n");
-  return text.length > MAX_TEXT ? text.slice(0, MAX_TEXT - 1) + "…" : text;
+  const units = cards.reduce((sum, c) => sum + Number(c.stock ?? 0), 0);
+  return fit([
+    ...header,
+    ...lines,
+    "━━━━━━━━━━━━━━━━━━━━",
+    `💰 Valor en stock del top: ${currency.format(totalValue)} (${units} unidades)`,
+  ].join("\n"));
 }
 
 async function publish(text) {

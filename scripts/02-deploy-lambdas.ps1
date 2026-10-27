@@ -22,6 +22,9 @@ if (-not $NOTICE_API_KEY) { throw "NOTICE_API_KEY vacia" }
 
 $envRecorder  = Join-Path ([IO.Path]::GetTempPath()) "env-recorder.json"
 $envGenerator = Join-Path ([IO.Path]::GetTempPath()) "env-generator.json"
+$envStock     = Join-Path ([IO.Path]::GetTempPath()) "env-stock.json"
+# Umbral de "stock bajo" para la Lambda 3 (mismo criterio del panel de Admin: <= 2)
+if (-not $env:LOW_STOCK_THRESHOLD) { $env:LOW_STOCK_THRESHOLD = "2" }
 try {
     # ConvertTo-Json escapa correctamente comillas o barras que pudiera tener la contrasena
     Write-JsonFile $envRecorder  (@{ Variables = @{ DATABASE_URL = $DATABASE_URL } } | ConvertTo-Json -Compress)
@@ -29,10 +32,16 @@ try {
         DATABASE_URL   = $DATABASE_URL
         NOTICE_URL     = $env:NOTICE_URL
         NOTICE_API_KEY = $NOTICE_API_KEY } } | ConvertTo-Json -Compress)
+    Write-JsonFile $envStock (@{ Variables = @{
+        DATABASE_URL        = $DATABASE_URL
+        NOTICE_URL          = $env:NOTICE_URL
+        NOTICE_API_KEY      = $NOTICE_API_KEY
+        LOW_STOCK_THRESHOLD = $env:LOW_STOCK_THRESHOLD } } | ConvertTo-Json -Compress)
 
     $functions = @(
         @{ Name = $FN_RECORDER;  Zip = (Join-Path $DIST "recorder.zip");  Env = $envRecorder },
-        @{ Name = $FN_GENERATOR; Zip = (Join-Path $DIST "generator.zip"); Env = $envGenerator }
+        @{ Name = $FN_GENERATOR; Zip = (Join-Path $DIST "generator.zip"); Env = $envGenerator },
+        @{ Name = $FN_STOCK;     Zip = (Join-Path $DIST "stock-alert.zip"); Env = $envStock }
     )
     foreach ($f in $functions) {
         if (-not (Test-Path $f.Zip)) { throw "No existe $($f.Zip): ejecuta antes .\scripts\01-package.ps1" }
@@ -64,7 +73,7 @@ try {
     }
 } finally {
     # Los archivos con claves se borran siempre, aunque algo falle
-    Remove-Item $envRecorder, $envGenerator -ErrorAction SilentlyContinue
+    Remove-Item $envRecorder, $envGenerator, $envStock -ErrorAction SilentlyContinue
     $DATABASE_URL = $null; $NOTICE_API_KEY = $null
 }
 
