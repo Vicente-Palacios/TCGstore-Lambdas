@@ -1,191 +1,188 @@
-# TCG Store — Lambdas de informes (Evaluación 2)
+TCGstore — Procesamiento de informes con AWS Lambda
+Funciones Node.js que procesan solicitudes de informes de TCGstore de forma asíncrona. El BFF publica eventos en SNS; las suscripciones distribuyen mensajes a colas SQS y estas activan las Lambdas. Los datos se consultan o registran en PostgreSQL de Supabase.
+Funciones
+Carpeta	Función	Comportamiento
+recorder/	report-request-recorder	Registra solicitudes en report_requests.
+generator/	report-generator	Consulta hasta diez cartas con mayor precio y publica un aviso en un servicio externo.
+stock-alert/	report-stock-alert	Busca cartas con stock bajo y publica un aviso si hay resultados.
+mailer/	report-mailer	Envía por API externa un correo HTML con cartas de la rareza configurada, si existen y hay correo válido.
 
-Procesamiento asíncrono de los informes de TCG Store, siguiendo la guía del curso
-"Construir el sistema a mano en LocalStack y llevarlo a AWS real", adaptada a una tienda de cartas.
 
+Por defecto, la alerta considera stock igual o inferior a 2 y el correo busca rareza Secreta. El informe generado es texto para un servicio externo de avisos; estas funciones no generan un PDF.
+Flujo del evento
+1. El BFF publica report.requested en el topic SNS report-events.
+2. Las suscripciones filtran por type y entregan el mensaje a las colas correspondientes.
+3. Cada cola activa su Lambda. generator también acepta report.regenerate.
+4. Las funciones consultan o registran información y, según corresponda, llaman al servicio externo de avisos o correo.
+Las funciones esperan que el cuerpo SQS contenga el sobre de SNS con la propiedad Message; la entrega sin procesar (Raw Message Delivery) debe estar desactivada para ese formato. Cada función informa fallos individuales mediante batchItemFailures; configura ReportBatchItemFailures en el trigger SQS para utilizarlos.
+
+SQS puede entregar mensajes más de una vez. El registro usa requestId como clave y ON CONFLICT DO NOTHING para evitar filas duplicadas. Esto no garantiza por sí solo que un aviso o correo externo no se duplique tras un reintento. Las DLQ sirven para revisar mensajes que exceden el límite configurado.
+Requisitos
+- Node.js y npm para empaquetar; las funciones emplean pg.
+- PowerShell, AWS CLI y tar disponibles en Windows.
+- PostgreSQL accesible y credenciales temporales AWS o rol con los permisos necesarios.
+- Recursos SNS/SQS/Lambda y acceso a las APIs externas para realizar pruebas completas.
+Los scripts configuran nodejs22.x para AWS y nodejs20.x para LocalStack; verifica que tu instalación local sea compatible con las dependencias. Los scripts de infraestructura crean o actualizan recursos: revisa cuenta y región antes de ejecutarlos.
+Variables de las funciones
+Variable	Uso
+DATABASE_URL	Cadena de conexión PostgreSQL; utilizada por las cuatro funciones.
+NOTICE_URL	Endpoint de avisos para generator y stock-alert.
+NOTICE_API_KEY	Clave del servicio de avisos/correo.
+EMAIL_URL	Endpoint de correo; mailer tiene un valor predeterminado.
+FEATURED_RARITY	Rareza del correo; predeterminado Secreta.
+APP_URL	Enlace de la aplicación incluido en el correo.
+LOW_STOCK_THRESHOLD	Umbral de alerta; predeterminado 2.
+REPORT_TIMEZONE	Zona horaria de los textos; predeterminado America/Santiago.
+DATABASE_SSL	false desactiva SSL; por defecto el código habilita SSL con rejectUnauthorized: false.
+
+
+Configura los valores mediante variables de entorno del despliegue y no subas contraseñas, claves ni credenciales al repositorio. La configuración actual de TLS no verifica el certificado del servidor; debe revisarse para producción.
+Preparación de la base de datos
+En Supabase, revisa y ejecuta sql/supabase.sql en el SQL Editor para crear report_requests y su índice. El script también activa RLS y consulta cards; la tabla cards debe existir. Usa una cadena PostgreSQL compatible con la conectividad de tus Lambdas.
+Empaquetado y despliegue
+Desde la raíz del repositorio, en PowerShell:
+aws sts get-caller-identity
+.\scripts\01-package.ps1
+El primer comando permite verificar la cuenta activa. El segundo instala dependencias de producción y genera cuatro ZIP en dist/, uno por función, sin desplegarlos.
+
+Los siguientes scripts realizan acciones sobre el entorno AWS configurado; revisa su contenido y permisos antes de ejecutarlos:
+Script	Función
+scripts/02-deploy-lambdas.ps1	Crea o actualiza funciones y configuración.
+scripts/03-messaging.ps1	Configura topic, colas, suscripciones, DLQ y triggers.
+scripts/04-test.ps1	Publica eventos de prueba.
+scripts/05-test-email.ps1	Prueba el servicio de correo.
+
+
+00-config.ps1 es cargado por los demás scripts y define nombres, región y rol para el entorno. Consulta docs/BLOQUE-B.md y docs/DEFENSA.md para el procedimiento de integración y presentación; revisa que sus valores coincidan con tu ambiente antes de aplicarlos.
+Verificación del flujo
+Solicita un informe desde el frontend como Admin y verifica la respuesta 202. Busca el requestId en logs, confirma su fila en report_requests, revisa los resultados del servicio externo y comprueba las DLQ. La ejecución real depende de la configuración del Gateway, SNS, SQS, permisos, base de datos y APIs externas.
+Arquitectura de mensajería
+```mermaid
+flowchart TD
+  B[BFF] --> T[SNS: report-events]
+  T --> Q1[SQS: report-requests]
+  T --> Q2[SQS: report-generation]
+  T --> Q3[SQS: report-stock-alerts]
+  T --> Q4[SQS: report-emails]
+  Q1 --> L1[recorder]
+  Q2 --> L2[generator]
+  Q3 --> L3[stock-alert]
+  Q4 --> L4[mailer]
+  L1 --> DB[PostgreSQL]
+  DB --> L2
+  DB --> L3
+  DB --> L4
+  L2 --> N[API de avisos]
+  L3 --> N
+  L4 --> E[API de correo]
 ```
-React (Vercel) ── POST /api/informes/generar ──► API Gateway ──► BFF Spring Boot (EC2)
-                                                                   │ publica (sns:Publish)
-                                                                   ▼
-                                       SNS topic "report-events"  (filtro por el campo "type")
-           ┌─────────────────────────────┼───────────────────────────────┐
-  type = report.requested    type = requested | regenerate        type = report.requested
-           ▼                             ▼                               ▼
- SQS report-requests (+DLQ)   SQS report-generation (+DLQ)   SQS report-stock-alerts (+DLQ)
-           ▼                             ▼                               ▼
- Lambda report-request-recorder  Lambda report-generator      Lambda report-stock-alert
- INSERT report_requests          top 10 cartas por precio     cartas con stock <= 2 (cards)
-                                 POST aviso (informe)         POST aviso (alerta de reposicion)
-```
+Los cuatro consumidores son independientes: ninguno espera a que termine el anterior. SNS distribuye el evento; SQS lo conserva mientras espera procesamiento. Cada cola principal tiene una DLQ propia, con nombre terminado en -dlq.
+Recursos y filtros definidos por los scripts
+Cola	Tipos aceptados	Función
+report-requests	report.requested	report-request-recorder
+report-generation	report.requested, report.regenerate	report-generator
+report-stock-alerts	report.requested	report-stock-alert
+report-emails	report.requested	report-mailer
 
-Ademas, una cuarta cola `report-emails` (filtro `report.requested`) dispara la **Lambda `report-mailer`**, que envia por **correo** (HTML con miniaturas) las cartas de rareza **Secreta** a quien pidio el informe.
 
-Los avisos se publican en `https://app.claudioviajando.com/api/saas/notices` y los correos se envian con `https://app.claudioviajando.com/api/saas/send-email` (misma API key).
+La suscripción configura FilterPolicyScope=MessageBody. La política de cada cola autoriza sqs:SendMessage al servicio SNS condicionando el ARN de origen al topic. El trigger configura lotes de cinco mensajes y ReportBatchItemFailures.
 
-| Pieza | Responsabilidad | Runtime / handler | Variables de entorno |
-|---|---|---|---|
-| `recorder/` → `report-request-recorder` | Guarda la solicitud (email, sub, tipo, fecha) en `report_requests` | `nodejs22.x` / `index.handler` | `DATABASE_URL` |
-| `generator/` → `report-generator` | Lee las 10 cartas más caras de `cards`, arma el informe y lo publica en el servicio de avisos | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_URL`, `NOTICE_API_KEY` |
-| `mailer/` → `report-mailer` | Con cada solicitud nueva, lee de `cards` las cartas de rareza `FEATURED_RARITY` (por defecto `Secreta`) y envia un correo HTML con miniaturas al email del solicitante (sale del JWT). Si no hay cartas de esa rareza o el solicitante no tiene email, no envia | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_API_KEY`, `EMAIL_URL`, `FEATURED_RARITY`, `APP_URL` |
-| `stock-alert/` → `report-stock-alert` | Con cada solicitud nueva, busca en `cards` las cartas con stock `<= LOW_STOCK_THRESHOLD` (agotadas primero) y publica una alerta de reposición. Si no hay ninguna, no publica nada | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_URL`, `NOTICE_API_KEY`, `LOW_STOCK_THRESHOLD` (por defecto `2`) |
+Los scripts establecen VisibilityTimeout=90 segundos, maxReceiveCount=3 y retención de DLQ de 14 días. maxReceiveCount limita recepciones antes del traslado a DLQ; no debe interpretarse como garantía de exactamente tres ejecuciones completas del código.
+Contrato del mensaje
+El contenido publicado en SNS tiene esta forma:
+{
+  "type": "report.requested",
+  "body": {
+    "requestId": "solicitud-de-ejemplo",
+    "requester": "usuario@example.com",
+    "requesterId": "sub-del-usuario",
+    "reportType": "top-products",
+    "params": {},
+    "requestedAt": "2026-10-27T12:00:00Z"
+  }
+}
+En Lambda se recibe un lote SQS: cada record.body contiene el JSON del sobre SNS; dentro de Message está serializado el evento anterior. events/sqs-report-requested.json sirve como muestra de ese envoltorio para invocaciones manuales. Publicar un JSON directamente en SQS sin ese formato no equivale a una entrega SNS compatible.
 
-Única dependencia: `pg` 8.23.1 (cliente de Postgres), empaquetada dentro del zip.
+requestId conecta logs y registro persistido. requester debe contener un email si se espera envío de correo. Con el BFF la identidad se extrae del JWT; el script de prueba utiliza una identidad ficticia y no comprueba el inicio de sesión.
+Comportamiento de las funciones
+Recorder
+Inserta en report_requests el identificador, solicitante, identificador de usuario, tipo, parámetros y fecha de la solicitud. Si el identificador ya existe, ON CONFLICT DO NOTHING evita otra fila. Acepta solo report.requested.
+Generator
+Consulta cards con precio no nulo, ordena por precio descendente y selecciona hasta diez cartas. Construye un resumen de texto y lo publica mediante POST a NOTICE_URL, con autenticación ApiKey. También procesa report.regenerate, sin producir por ello un nuevo registro en la cola de solicitudes.
 
-**Errores, reintentos y duplicados**
-- Las Lambdas devuelven `batchItemFailures` (trigger con `ReportBatchItemFailures`): si falla un mensaje del lote, solo ese se reintenta; los que salieron bien no se vuelven a procesar (no se duplican avisos).
-- Cada mensaje se reintenta hasta 3 veces (`maxReceiveCount`) y luego va a su DLQ, donde se conserva 14 días.
-- `report_requests.id` = `requestId` del BFF + `INSERT … ON CONFLICT DO NOTHING`: una entrega repetida de SQS no duplica la fila.
-- Respuesta no 2xx del servicio de avisos (401, 404, 500, redirect) = error = reintento. La clave nunca se escribe en los logs.
-
----
-
-## Requisitos (Windows)
-
-Ejecuta en **PowerShell** (de preferencia PowerShell 7: `winget install Microsoft.PowerShell`; también funciona en Windows PowerShell 5.1):
-
-```powershell
-aws --version     # AWS CLI v2, 2.13 o superior
-node -v           # 20 o superior
-tar --version     # viene con Windows 10/11 (bsdtar)
-```
-
-Si PowerShell bloquea los scripts (`running scripts is disabled`), permítelos solo en esta terminal:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-## Paso 0 — Credenciales del Learner Lab (AWS real)
-
-1. En AWS Academy: **Start Lab** y espera el punto verde. Luego **AWS Details → AWS CLI → Show**.
-2. Copia ese bloque completo (incluye `aws_session_token`) en `%USERPROFILE%\.aws\credentials`, reemplazando la sección `[default]`:
-
-```powershell
-notepad $HOME\.aws\credentials
-```
-
-3. Comprueba en qué cuenta estás **antes de crear nada**:
-
-```powershell
-Remove-Item Env:AWS_PROFILE -ErrorAction SilentlyContinue   # que no quede apuntando a LocalStack
+El código implementa esta consulta fija; reportType y params no representan un motor genérico de consultas. Los importes se formatean como USD, por lo que debe verificarse que esa unidad corresponda a los datos del catálogo.
+Stock alert
+Consulta hasta 50 cartas con stock igual o inferior al umbral. Trata stock nulo como cero y prioriza las agotadas, después el menor stock y luego el precio. Si no hay coincidencias, registra esa situación y termina sin publicar aviso.
+Mailer
+Consulta las cartas de la rareza configurada y prepara un correo HTML con miniaturas y enlace a la aplicación. El destinatario es el solicitante de la petición. Si no hay cartas o no hay un correo válido para el solicitante, no envía un correo. La API externa debe habilitar al usuario y permitir el envío; sus cuotas y disponibilidad se verifican con el proveedor.
+Despliegue paso a paso en PowerShell
+1. Comprueba cuenta y región de AWS con credenciales vigentes.
+2. Prepara la tabla report_requests y comprueba acceso a cards.
+3. Empaqueta las cuatro funciones.
+4. Despliega código y variables.
+5. Conecta mensajería y triggers.
+6. Ejecuta una prueba controlada y revisa logs, base y servicios externos.
 $env:AWS_REGION = "us-east-1"
 aws sts get-caller-identity
-```
-
-Esperado: un `Account` de 12 dígitos (no `000000000000`) y un `Arn` que contiene `voclabs`.
-Las credenciales del laboratorio **caducan al terminar la sesión** (unas 4 h): si un comando responde `ExpiredToken`, repite el paso 0.
-
-## Paso 1 — Supabase
-
-1. **Cadena de conexión.** Supabase → tu proyecto → botón **Connect** → pestaña **Session pooler** → copia la URI:
-   `postgresql://postgres.<ref>:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres`
-   - Usa el **session pooler**, no la "Direct connection": la directa es solo IPv6 y una Lambda sin VPC no tiene salida IPv6.
-   - Reemplaza `[YOUR-PASSWORD]` por la contraseña de la base. Si tiene caracteres como `@ : / # ?`, escríbelos codificados (`@` → `%40`).
-   - Si no recuerdas la contraseña: Project Settings → Database → **Reset database password**. Si la cambias, actualiza también el secret `SUPABASE_DB_PASSWORD` de GitHub (lo usa el BFF).
-2. **Tabla de solicitudes.** SQL Editor → New query → pega el contenido de [`sql/supabase.sql`](sql/supabase.sql) → **Run**.
-   Esperado: "Success" y, al final, la lista de tus cartas más caras (si sale vacía, la Lambda 2 igual funciona e informa "No hay cartas…").
-
-## Paso 1b — Comprobar que puedes enviar correos (Lambda 4)
-
-La API de correos exige que el profesor habilite tu usuario. Despues del paso 3 (cuando la API key ya esta en la Lambda), prueba:
-
-```powershell
-.\scripts\05-test-email.ps1 -To tu-correo@duocuc.cl
-```
-
-`OK: correo enviado` = habilitado. `email_not_enabled` = pidele al profesor que active tu usuario (Administracion → Emails). Cuota por defecto: 50 destinatarios al dia y 10 envios por minuto.
-
-## Paso 2 — Empaquetar (local, sin costo)
-
-Desde la raíz de este repo:
-
-```powershell
 .\scripts\01-package.ps1
-```
-
-Esperado: `recorder.zip`, `generator.zip` y `stock-alert.zip` en `dist\` (unos 150 KB cada uno).
-
-## Paso 3 — Crear las Lambdas (AWS real)
-
-```powershell
 .\scripts\02-deploy-lambdas.ps1
-```
-
-- Te pide `DATABASE_URL` (paso 1) y `NOTICE_API_KEY` (la clave que entregó el profesor). Se escriben ocultas y solo se guardan como variables de entorno de cada Lambda (cifradas por AWS). Los JSON temporales se borran al terminar.
-- Usa el rol `LabRole` (Learner Lab no deja crear roles; ya tiene permisos para leer SQS y escribir logs).
-- Si las funciones ya existen, actualiza código y configuración. Puedes ejecutarlo de nuevo cuando cambies el código.
-
-Esperado: una tabla con las tres funciones en estado `Active`.
-Para cambiar el umbral de stock bajo: `$env:LOW_STOCK_THRESHOLD = "3"` antes de ejecutar el script.
-
-**Prueba aislada** (antes de conectar colas): invoca la Lambda 2 con un evento falso que imita SQS → SNS.
-
-```powershell
-$log = aws lambda invoke --function-name report-generator `
-  --cli-binary-format raw-in-base64-out --payload file://events/sqs-report-requested.json `
-  --log-type Tail --query LogResult --output text out.json
-[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($log))
-Get-Content out.json
-```
-
-Esperado en el log: `Aviso publicado (HTTP 201)` e `Informe generado: manual-1 con N cartas`; `out.json` = `{"batchItemFailures":[]}`.
-Si aparece `La API de avisos respondio HTTP 401`, la clave es incorrecta; si es `timeout` o `ENOTFOUND` hacia `pooler.supabase.com`, revisa `DATABASE_URL`.
-
-## Paso 4 — SNS, colas, DLQ, suscripciones y triggers (AWS real)
-
-```powershell
 .\scripts\03-messaging.ps1
-```
+Ejecuta cada línea después de comprobar el resultado anterior. El script de despliegue solicita la conexión PostgreSQL y la clave de API; utiliza LabRole en AWS real. No asumas que el rol existe o tiene todos los permisos en cualquier cuenta: esa configuración corresponde al laboratorio. Los permisos de SNS, SQS, CloudWatch Logs y Lambda deben ajustarse al entorno.
 
-Crea (o reutiliza, si ya existen): el topic `report-events`; las colas `report-requests`, `report-generation` y `report-stock-alerts`, cada una con su DLQ (`-dlq`), `VisibilityTimeout` de 90 s y máximo 3 intentos; la política que deja escribir **solo a este topic**; las suscripciones con `FilterPolicy` sobre el campo `type` del cuerpo del mensaje; y los triggers cola → Lambda (lote de 5, `ReportBatchItemFailures`).
+El ARN del topic resultante debe configurarse como SNS_TOPIC_ARN en el BFF. Cambiar la configuración local de un script no modifica automáticamente un contenedor BFF que ya esté desplegado.
+Pruebas por nivel
+Publicación en SNS sin frontend ni BFF
+.\scripts\04-test.ps1
+.\scripts\04-test.ps1 -Type report.regenerate
+La primera prueba activa los cuatro consumidores. La segunda activa solo el generador mediante el filtro. El script muestra logs y cantidades aproximadas de mensajes en las DLQ. No demuestra autenticación de usuario ni permisos HTTP del BFF.
 
-Esperado: los tres triggers en `Enabled`, las tres suscripciones y, al final, el **ARN del topic**. Guárdalo: es la variable `SNS_TOPIC_ARN` del BFF (GitHub → Settings → Secrets and variables → Actions → Variables).
+Para probar correo, utiliza un destinatario propio autorizado:
+.\scripts\05-test-email.ps1 -To "<tu-correo>"
+Esta llamada realiza un envío real si el servicio lo permite. El script SNS usa un solicitante ficticio; para comprobar el correo del usuario autenticado, realiza además la prueba desde React.
+Prueba completa desde la aplicación
+1. Inicia sesión como Admin.
+2. Solicita el informe desde administración y conserva el informeId devuelto por el BFF.
+3. Busca el mismo identificador en los logs de las funciones.
+4. Comprueba la fila en Supabase:
+SELECT id, requester, requester_id, type, requested_at
+FROM report_requests
+ORDER BY requested_at DESC
+LIMIT 10;
+5. Revisa el aviso de informe, el de stock si hay coincidencias y el correo si se cumplen sus condiciones.
+6. Comprueba si hay mensajes pendientes o fallidos en SQS y las DLQ.
+Una fila registrada no prueba que el aviso o correo se haya enviado: cada consumidor necesita su propia evidencia.
+Logs y diagnóstico
+aws logs tail /aws/lambda/report-generator --since 10m
+aws logs tail /aws/lambda/report-request-recorder --since 10m
+aws logs tail /aws/lambda/report-stock-alert --since 10m
+aws logs tail /aws/lambda/report-mailer --since 10m
+Síntoma	Qué comprobar
+ExpiredToken	Credenciales de la sesión AWS.
+Acceso denegado a recursos	Cuenta, región, rol y políticas.
+Error al parsear el mensaje	Envoltorio SNS y Raw Message Delivery.
+No llega nada a una cola	Filtro, type, suscripción y política de la cola.
+Cola recibe pero Lambda no ejecuta	Trigger habilitado y permisos para SQS.
+Error de conexión PostgreSQL	Host, DNS, red, usuario, contraseña y TLS.
+Tabla inexistente	Esquema, base correcta y ejecución del SQL.
+HTTP 401 en API externa	Clave y cabecera de autenticación.
+No hay alerta de stock	Datos del catálogo y umbral.
+No hay correo	Email del solicitante, rareza, permisos del servicio y logs.
+Avisos repetidos	Entregas repetidas o fallo después del efecto externo.
 
-## Paso 5 — Probar el flujo (sin el BFF todavía)
 
-```powershell
-.\scripts\04-test.ps1                            # report.requested: debe guardar Y generar
-.\scripts\04-test.ps1 -Type report.regenerate    # solo genera; NO debe crear fila
-```
+Las funciones utilizan conexiones PostgreSQL reutilizables y devuelven los identificadores fallidos del lote. Si un servicio externo acepta un envío y después ocurre un error, un reintento puede repetir ese efecto: para garantizar unicidad se necesita un mecanismo adicional de idempotencia.
+Estructura y mantenimiento
+- recorder/, generator/, stock-alert/, mailer/: código y dependencias de cada función.
+- scripts/: configuración, empaquetado, despliegue, mensajería y pruebas.
+- sql/: esquema de solicitudes.
+- events/: evento de prueba.
+- docs/: guía de integración y material de defensa.
+- dist/: ZIP generados localmente al empaquetar.
+Después de cambiar código, vuelve a empaquetar y desplegar las funciones afectadas. Revisa los filtros y los contratos si cambia la estructura de eventos. No publiques credenciales AWS, DATABASE_URL con contraseña, API keys ni datos personales de pruebas en commits o capturas.
+LocalStack y alcance
+00-config.ps1 distingue LocalStack por la cuenta 000000000000 y cambia el runtime y rol utilizados. Esto no prepara por sí solo un emulador ni su conectividad: configura previamente el perfil, endpoint y servicios locales. El repositorio no incluye un entorno Docker Compose completo.
 
-Publica en SNS exactamente el mensaje que publica el BFF y muestra los logs de ambas Lambdas.
-Esperado: `Solicitud registrada: cli-…`, `Aviso publicado (HTTP 201)`, `Informe generado: cli-…`, `Alerta publicada (HTTP 201)` / `Alerta de stock generada: cli-…` (o `Sin cartas con stock bajo`) y `0` mensajes en las DLQ.
-Después, en Supabase: `SELECT * FROM report_requests ORDER BY requested_at DESC;`
-
-## Logs y diagnóstico
-
-```powershell
-# Últimos mensajes de una Lambda
-(aws logs filter-log-events --log-group-name /aws/lambda/report-generator --query 'events[].message' --output text) -split "`t" |
-  Select-String "Aviso publicado|Informe generado|Error" | Select-Object -Last 10
-
-# Mensajes que fallaron 3 veces (DLQ)
-$u = aws sqs get-queue-url --queue-name report-generation-dlq --query QueueUrl --output text
-aws sqs receive-message --queue-url $u --max-number-of-messages 5 --query 'Messages[].Body' --output text
-```
-
-| Síntoma | Causa probable | Solución |
-|---|---|---|
-| `ExpiredToken` / `InvalidClientTokenId` | Credenciales del lab caducadas | Repite el paso 0 |
-| `AccessDenied` al crear la función | Rol distinto de `LabRole` o región no permitida | Usa `us-east-1`; no cambies `$ROLE_ARN` |
-| Log: `connect ETIMEDOUT` / `ENETUNREACH` hacia Supabase | Se usó la conexión directa (IPv6) | Usa la URI del **session pooler** |
-| Log: `password authentication failed` | Contraseña o usuario (`postgres.<ref>`) incorrectos | Copia de nuevo la URI y ejecuta `02-deploy-lambdas.ps1` |
-| Log: `relation "report_requests" does not exist` | No se ejecutó `sql/supabase.sql` | Paso 1 |
-| Log: `respondio HTTP 401` | `NOTICE_API_KEY` incorrecta | Ejecuta de nuevo `02-deploy-lambdas.ps1` |
-| Publicas y no llega nada, sin errores | El `type` no coincide con ningún filtro | Debe ser `report.requested` o `report.regenerate` |
-| Mensaje en una DLQ | Falló 3 veces | Mira el log de la Lambda (`Error procesando mensaje …`) |
-
-## Costos
-
-Lambda, SNS y SQS en este volumen cuestan prácticamente 0 (capa gratuita / centavos) y se descuentan del crédito del Learner Lab. Lo que sí consume crédito de forma continua es la **EC2** del BFF: detén el laboratorio (**End Lab**) cuando no estés trabajando.
-
-## Opcional — LocalStack
-
-Los mismos scripts sirven contra LocalStack (guía del curso, secciones 2 y 3): levanta LocalStack con el `docker-compose.yml` de la guía y activa su perfil antes de ejecutarlos:
-
-```powershell
-$env:AWS_PROFILE = "localstack"; $env:AWS_REGION = "us-east-1"
-aws sts get-caller-identity   # debe mostrar 000000000000
-```
-
-`00-config.ps1` detecta la cuenta `000000000000` y usa `nodejs20.x` y un rol ficticio. Las Lambdas en LocalStack pueden conectarse a tu Supabase real. Para no publicar avisos reales, define antes `$env:NOTICE_URL = "http://host.docker.internal:8082/api/saas/notices"` y levanta el servicio de avisos local de la guía (sección 4).
+Las funciones no garantizan alta disponibilidad de la base ni del proveedor externo, y no implementan un endpoint para que React consulte el resultado final. La configuración y las evidencias del despliegue se mantienen por ambiente.
+Repositorios relacionados
+- BFF
+- Frontend
