@@ -18,12 +18,15 @@ React (Vercel) ── POST /api/informes/generar ──► API Gateway ──►
                                  POST aviso (informe)         POST aviso (alerta de reposicion)
 ```
 
-Los avisos se publican en `https://app.claudioviajando.com/api/saas/notices`.
+Ademas, una cuarta cola `report-emails` (filtro `report.requested`) dispara la **Lambda `report-mailer`**, que envia por **correo** (HTML con miniaturas) las cartas de rareza **Secreta** a quien pidio el informe.
+
+Los avisos se publican en `https://app.claudioviajando.com/api/saas/notices` y los correos se envian con `https://app.claudioviajando.com/api/saas/send-email` (misma API key).
 
 | Pieza | Responsabilidad | Runtime / handler | Variables de entorno |
 |---|---|---|---|
 | `recorder/` → `report-request-recorder` | Guarda la solicitud (email, sub, tipo, fecha) en `report_requests` | `nodejs22.x` / `index.handler` | `DATABASE_URL` |
 | `generator/` → `report-generator` | Lee las 10 cartas más caras de `cards`, arma el informe y lo publica en el servicio de avisos | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_URL`, `NOTICE_API_KEY` |
+| `mailer/` → `report-mailer` | Con cada solicitud nueva, lee de `cards` las cartas de rareza `FEATURED_RARITY` (por defecto `Secreta`) y envia un correo HTML con miniaturas al email del solicitante (sale del JWT). Si no hay cartas de esa rareza o el solicitante no tiene email, no envia | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_API_KEY`, `EMAIL_URL`, `FEATURED_RARITY`, `APP_URL` |
 | `stock-alert/` → `report-stock-alert` | Con cada solicitud nueva, busca en `cards` las cartas con stock `<= LOW_STOCK_THRESHOLD` (agotadas primero) y publica una alerta de reposición. Si no hay ninguna, no publica nada | `nodejs22.x` / `index.handler` | `DATABASE_URL`, `NOTICE_URL`, `NOTICE_API_KEY`, `LOW_STOCK_THRESHOLD` (por defecto `2`) |
 
 Única dependencia: `pg` 8.23.1 (cliente de Postgres), empaquetada dentro del zip.
@@ -81,6 +84,16 @@ Las credenciales del laboratorio **caducan al terminar la sesión** (unas 4 h): 
    - Si no recuerdas la contraseña: Project Settings → Database → **Reset database password**. Si la cambias, actualiza también el secret `SUPABASE_DB_PASSWORD` de GitHub (lo usa el BFF).
 2. **Tabla de solicitudes.** SQL Editor → New query → pega el contenido de [`sql/supabase.sql`](sql/supabase.sql) → **Run**.
    Esperado: "Success" y, al final, la lista de tus cartas más caras (si sale vacía, la Lambda 2 igual funciona e informa "No hay cartas…").
+
+## Paso 1b — Comprobar que puedes enviar correos (Lambda 4)
+
+La API de correos exige que el profesor habilite tu usuario. Despues del paso 3 (cuando la API key ya esta en la Lambda), prueba:
+
+```powershell
+.\scripts\05-test-email.ps1 -To tu-correo@duocuc.cl
+```
+
+`OK: correo enviado` = habilitado. `email_not_enabled` = pidele al profesor que active tu usuario (Administracion → Emails). Cuota por defecto: 50 destinatarios al dia y 10 envios por minuto.
 
 ## Paso 2 — Empaquetar (local, sin costo)
 

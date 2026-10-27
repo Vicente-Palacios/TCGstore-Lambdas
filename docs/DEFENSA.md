@@ -36,6 +36,7 @@ Marca cada punto cuando tengas la evidencia guardada (📸 = captura).
 | B12 | `.\scripts\04-test.ps1 -Type report.regenerate` → aviso generado y **0** filas nuevas | Función de la segunda cola (re-envío sin duplicar) | 📸 terminal |
 | B13 | DLQ con 0 mensajes; explicar `ON CONFLICT DO NOTHING` y `batchItemFailures` | Mensajes duplicados y reintentos | 📸 consola SQS |
 | B15 | Admin pulsa **Generar informe** → llegan **dos** avisos: el informe (top 10 por precio) y la **alerta de stock bajo**. CloudWatch `/aws/lambda/report-stock-alert`: `Alerta de stock generada: <requestId> con N cartas`. Con `report.regenerate` la alerta **no** se repite | Extensibilidad del fan-out: un tercer consumidor agregado sin tocar el BFF ni el front | 📸 los 2 avisos + log + suscripción con filtro |
+| B16 | Admin pulsa **Generar informe** → llega a su bandeja un **correo** "🤫 N cartas Secretas que todos conocen en TCG Store" con miniaturas. Log `/aws/lambda/report-mailer`: `Correo enviado (HTTP 201) … cuota restante` | Salida del informe por correo electronico (API send-email), cuarto consumidor del fan-out | 📸 correo recibido + log |
 | B14 | Mostrar que no hay secretos en git: `.gitignore`, claves solo en GitHub Secrets / variables de Lambda; la clave de avisos se pide oculta en `02-deploy-lambdas.ps1` | Protección de credenciales | 📸 `.gitignore` y GitHub Secrets (sin valores) |
 
 ## Preguntas probables y respuesta corta

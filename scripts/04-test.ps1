@@ -27,7 +27,7 @@ function Get-Logs($Function) {
             --query "events[].message" --output text 2>$null
     } catch { return @() }
     if ($LASTEXITCODE -ne 0 -or -not $events) { return @() }
-    return ($events -split "`t") | Where-Object { $_ -match $MARK -or $_ -match "Error|errorMessage|Aviso publicado|Alerta publicada" }
+    return ($events -split "`t") | Where-Object { $_ -match $MARK -or $_ -match "Error|errorMessage|Aviso publicado|Alerta publicada|Correo enviado" }
 }
 
 $okGen = $false
@@ -38,8 +38,9 @@ for ($i = 0; $i -lt 12 -and -not $okGen; $i++) {
 Write-Host "--- $FN_GENERATOR" -ForegroundColor Yellow; Get-Logs $FN_GENERATOR
 Write-Host "--- $FN_RECORDER"  -ForegroundColor Yellow; Get-Logs $FN_RECORDER
 Write-Host "--- $FN_STOCK"     -ForegroundColor Yellow; Get-Logs $FN_STOCK
+Write-Host "--- $FN_MAIL"      -ForegroundColor Yellow; Get-Logs $FN_MAIL
 
-foreach ($q in $Q_REQUESTS, $Q_GENERATION, $Q_STOCK) {
+foreach ($q in $Q_REQUESTS, $Q_GENERATION, $Q_STOCK, $Q_MAIL) {
     $u = aws sqs get-queue-url --queue-name "$q-dlq" --query QueueUrl --output text
     $n = aws sqs get-queue-attributes --queue-url $u --attribute-names ApproximateNumberOfMessages --query Attributes.ApproximateNumberOfMessages --output text
     Write-Host "Mensajes en $q-dlq (debe ser 0): $n"

@@ -1,4 +1,4 @@
-# Crea el topic SNS, las 3 colas SQS (cada una con su DLQ), sus politicas, las suscripciones con filtro
+# Crea el topic SNS, las 4 colas SQS (cada una con su DLQ), sus politicas, las suscripciones con filtro
 # por "type" y los triggers hacia las Lambdas. Es idempotente: si algo ya existe, lo reutiliza.
 # Ejecutar desde la raiz del repo, despues de 02-deploy-lambdas.ps1: .\scripts\03-messaging.ps1
 
@@ -59,6 +59,8 @@ $REQUESTS_ARN   = New-Queue $Q_REQUESTS   '{"type":["report.requested"]}'
 $GENERATION_ARN = New-Queue $Q_GENERATION '{"type":["report.requested","report.regenerate"]}'
 # Lambda 3: solo solicitudes nuevas (un re-envio no repite la alerta de stock)
 $STOCK_ARN      = New-Queue $Q_STOCK      '{"type":["report.requested"]}'
+# Lambda 4: solo solicitudes nuevas (un re-envio no vuelve a mandar el correo)
+$MAIL_ARN       = New-Queue $Q_MAIL       '{"type":["report.requested"]}'
 
 # 2) Triggers cola -> Lambda. ReportBatchItemFailures: solo se reintentan los mensajes que fallaron.
 function New-Trigger($Function, $QueueArn) {
@@ -75,6 +77,7 @@ function New-Trigger($Function, $QueueArn) {
 New-Trigger $FN_RECORDER  $REQUESTS_ARN
 New-Trigger $FN_GENERATOR $GENERATION_ARN
 New-Trigger $FN_STOCK     $STOCK_ARN
+New-Trigger $FN_MAIL      $MAIL_ARN
 
 Start-Sleep 5
 aws lambda list-event-source-mappings --query "EventSourceMappings[].[FunctionArn,EventSourceArn,State]" --output table

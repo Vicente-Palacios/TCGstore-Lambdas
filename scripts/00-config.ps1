@@ -13,9 +13,11 @@ $TOPIC_NAME     = "report-events"
 $Q_REQUESTS     = "report-requests"
 $Q_GENERATION   = "report-generation"
 $Q_STOCK        = "report-stock-alerts"
+$Q_MAIL         = "report-emails"
 $FN_RECORDER    = "report-request-recorder"
 $FN_GENERATOR   = "report-generator"
 $FN_STOCK       = "report-stock-alert"
+$FN_MAIL        = "report-mailer"
 
 # Quien soy: evita crear recursos en la cuenta equivocada
 $ACCOUNT_ID = aws sts get-caller-identity --query Account --output text

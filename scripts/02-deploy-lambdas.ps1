@@ -23,6 +23,11 @@ if (-not $NOTICE_API_KEY) { throw "NOTICE_API_KEY vacia" }
 $envRecorder  = Join-Path ([IO.Path]::GetTempPath()) "env-recorder.json"
 $envGenerator = Join-Path ([IO.Path]::GetTempPath()) "env-generator.json"
 $envStock     = Join-Path ([IO.Path]::GetTempPath()) "env-stock.json"
+$envMail      = Join-Path ([IO.Path]::GetTempPath()) "env-mail.json"
+# Lambda 4: API de correos del profesor, rareza que se envia por correo y enlace del boton del correo
+if (-not $env:EMAIL_URL)       { $env:EMAIL_URL = "https://app.claudioviajando.com/api/saas/send-email" }
+if (-not $env:FEATURED_RARITY) { $env:FEATURED_RARITY = "Secreta" }
+if (-not $env:APP_URL)         { $env:APP_URL = "https://tc-gstore-front.vercel.app" }
 # Umbral de "stock bajo" para la Lambda 3 (mismo criterio del panel de Admin: <= 2)
 if (-not $env:LOW_STOCK_THRESHOLD) { $env:LOW_STOCK_THRESHOLD = "2" }
 try {
@@ -37,11 +42,18 @@ try {
         NOTICE_URL          = $env:NOTICE_URL
         NOTICE_API_KEY      = $NOTICE_API_KEY
         LOW_STOCK_THRESHOLD = $env:LOW_STOCK_THRESHOLD } } | ConvertTo-Json -Compress)
+    Write-JsonFile $envMail (@{ Variables = @{
+        DATABASE_URL    = $DATABASE_URL
+        NOTICE_API_KEY  = $NOTICE_API_KEY
+        EMAIL_URL       = $env:EMAIL_URL
+        FEATURED_RARITY = $env:FEATURED_RARITY
+        APP_URL         = $env:APP_URL } } | ConvertTo-Json -Compress)
 
     $functions = @(
         @{ Name = $FN_RECORDER;  Zip = (Join-Path $DIST "recorder.zip");  Env = $envRecorder },
         @{ Name = $FN_GENERATOR; Zip = (Join-Path $DIST "generator.zip"); Env = $envGenerator },
-        @{ Name = $FN_STOCK;     Zip = (Join-Path $DIST "stock-alert.zip"); Env = $envStock }
+        @{ Name = $FN_STOCK;     Zip = (Join-Path $DIST "stock-alert.zip"); Env = $envStock },
+        @{ Name = $FN_MAIL;      Zip = (Join-Path $DIST "mailer.zip");      Env = $envMail }
     )
     foreach ($f in $functions) {
         if (-not (Test-Path $f.Zip)) { throw "No existe $($f.Zip): ejecuta antes .\scripts\01-package.ps1" }
@@ -73,7 +85,7 @@ try {
     }
 } finally {
     # Los archivos con claves se borran siempre, aunque algo falle
-    Remove-Item $envRecorder, $envGenerator, $envStock -ErrorAction SilentlyContinue
+    Remove-Item $envRecorder, $envGenerator, $envStock, $envMail -ErrorAction SilentlyContinue
     $DATABASE_URL = $null; $NOTICE_API_KEY = $null
 }
 

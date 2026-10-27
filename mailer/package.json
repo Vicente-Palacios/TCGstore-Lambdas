@@ -1,0 +1,11 @@
+{
+  "name": "tcgstore-report-mailer",
+  "version": "1.0.0",
+  "description": "Lambda 4: con cada solicitud de informe, envia por correo (HTML con miniaturas) las cartas de rareza Secreta (cola report-emails)",
+  "main": "index.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}
