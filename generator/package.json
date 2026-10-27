@@ -1,0 +1,11 @@
+{
+  "name": "tcgstore-report-generator",
+  "version": "1.0.0",
+  "description": "Lambda 2: arma el informe de las 10 cartas mas caras y lo publica en el servicio de avisos (cola report-generation)",
+  "main": "index.js",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}

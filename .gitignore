@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.zip
+# Archivos con claves: nunca a git
+env-*.json
+.env
+.env.*
+msg*.json
